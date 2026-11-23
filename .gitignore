@@ -1,0 +1,38 @@
+# Python environments and generated files
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+.aws/
+.codex/
+.agents/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# Raw WESAD data is not distributed with the demo
+data/
+
+# Generated research arrays and original deployment archive
+.ipynb_checkpoints/
+wesad_windows.npz
+wesad_meta.csv
+wesad_loso_results.npz
+wesad_deployment_package.zip
+outputs/

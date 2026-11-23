@@ -1,0 +1,6 @@
+-r requirements.txt
+
+# Optional acquisition tool; all other research dependencies are in requirements.txt.
+kagglehub>=0.3.0
+
+# google.colab is supplied by Colab; local commands do not depend on it.

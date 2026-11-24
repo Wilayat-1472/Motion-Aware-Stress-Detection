@@ -341,6 +341,19 @@ python -m stress_detection benchmark --output outputs/tabular_metrics.json
 
 This evaluates raw and resting-calibrated features with the notebook's HistGradientBoosting settings, holding out one participant at a time.
 
+New `benchmark` and `evaluate` runs score only windows starting after the end of
+the participant's first three resting-reference windows. Overlapping windows are
+excluded too: with starts at 0, 15 and 30 seconds, scoring starts at 60 seconds,
+not at the fourth window. Predictions are retained for every window, while JSON
+and NPZ reports record an explicit `evaluation_mask`, excluded counts and the
+protocol name. Diagnostic metrics use this same mask.
+
+The historical scores above include onboarding and remain unchanged. To reproduce
+that scoring explicitly, pass `--include-onboarding` to `benchmark` or `evaluate`.
+Post-onboarding results require a new run and must not be substituted into the
+historical table. Training/calibration formulas and existing model compatibility
+are unchanged; full-recording filtering remains offline.
+
 ### 3. Train and evaluate the neural network with LOSO
 
 ```bash

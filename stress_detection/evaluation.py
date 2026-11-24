@@ -14,7 +14,7 @@ from sklearn.metrics import (
     f1_score,
 )
 
-from .calibration import calibrate_windows, fit_feature_scaler
+from .calibration import calibrate_windows, fit_feature_scaler, post_onboarding_mask
 from .config import CLASSES, TrainingConfig
 from .inference import ModelBundle, predict_calibrated
 from .training import set_seed, train_network
@@ -26,7 +26,9 @@ def summarize(labels, predictions, subjects):
             f1_score(
                 labels[subjects == subject],
                 predictions[subjects == subject],
+                labels=[0, 1, 2],
                 average="macro",
+                zero_division=0,
             )
         )
         for subject in sorted(set(subjects))
@@ -34,7 +36,7 @@ def summarize(labels, predictions, subjects):
     return {
         "windows": int(len(labels)),
         "subjects": len(per_subject),
-        "macro_f1": float(f1_score(labels, predictions, average="macro")),
+        "macro_f1": float(f1_score(labels, predictions, labels=[0, 1, 2], average="macro", zero_division=0)),
         "balanced_accuracy": float(balanced_accuracy_score(labels, predictions)),
         "mean_subject_macro_f1": float(np.mean(list(per_subject.values()))),
         "std_subject_macro_f1": float(np.std(list(per_subject.values()))),
@@ -66,8 +68,19 @@ def validate_loso(dataset):
             )
 
 
-def run_tabular_benchmarks(dataset):
+def evaluation_selection(dataset, exclude_onboarding):
+    mask = post_onboarding_mask(dataset) if exclude_onboarding else np.ones(len(dataset.labels), dtype=bool)
+    return mask, {
+        'evaluation_protocol': 'post_onboarding' if exclude_onboarding else 'historical_including_onboarding',
+        'total_windows': len(mask),
+        'excluded_windows': int((~mask).sum()),
+        'evaluation_mask': mask.tolist(),
+    }
+
+
+def run_tabular_benchmarks(dataset, *, exclude_onboarding=True):
     validate_loso(dataset)
+    mask, protocol = evaluation_selection(dataset, exclude_onboarding)
     calibrated = calibrate_windows(dataset, tabular_only=True)
     reports = {}
     for name, features in (
@@ -88,12 +101,14 @@ def run_tabular_benchmarks(dataset):
             classifier.fit(features[~test], dataset.labels[~test])
             predictions[test] = classifier.predict(features[test])
             print(f"{name}: completed held-out subject {subject}", flush=True)
-        reports[name] = summarize(dataset.labels, predictions, dataset.subjects)
+        reports[name] = summarize(dataset.labels[mask], predictions[mask], dataset.subjects[mask])
+        reports[name].update(protocol)
     return reports
 
 
-def run_loso(dataset, config=TrainingConfig()):
+def run_loso(dataset, config=TrainingConfig(), *, exclude_onboarding=True):
     validate_loso(dataset)
+    evaluation_mask, protocol = evaluation_selection(dataset, exclude_onboarding)
     calibrated = calibrate_windows(dataset)
     set_seed(config.seed)  # Seed once before the fold loop, matching the notebook.
     scores = np.zeros((len(dataset.labels), 3), dtype=np.float32)
@@ -115,8 +130,10 @@ def run_loso(dataset, config=TrainingConfig()):
             calibrated.features[test],
             config.evaluation_batch_size,
         )
+        scored = test & evaluation_mask
         fold_f1 = float(
-            f1_score(dataset.labels[test], scores[test].argmax(1), average="macro")
+            f1_score(dataset.labels[scored], scores[scored].argmax(1),
+                     labels=[0, 1, 2], average="macro", zero_division=0)
         )
         folds.append(
             {
@@ -125,10 +142,12 @@ def run_loso(dataset, config=TrainingConfig()):
                 "macro_f1": fold_f1,
                 "training_windows": int((~test).sum()),
                 "test_windows": int(test.sum()),
+                "scored_test_windows": int(scored.sum()),
             }
         )
         print(f"Held out {subject}: Macro-F1 {fold_f1:.4f}", flush=True)
-    report = summarize(dataset.labels, scores.argmax(1), dataset.subjects)
+    report = summarize(dataset.labels[evaluation_mask], scores[evaluation_mask].argmax(1), dataset.subjects[evaluation_mask])
+    report.update(protocol)
     report.update(
         {
             "training_config": asdict(config),
@@ -149,6 +168,7 @@ def save_evaluation(dataset, scores, report, directory):
         y_true=dataset.labels,
         subjects=dataset.subjects,
         start_sec=dataset.metadata["start_sec"].to_numpy(),
+        evaluation_mask=np.asarray(report['evaluation_mask'], dtype=bool),
     )
     write_json(report, directory / "metrics.json")
 

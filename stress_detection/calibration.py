@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .config import BASELINE_WINDOWS
+from .config import BASELINE_WINDOWS, WINDOW_SECONDS
 from .dataset import WindowDataset
 
 
@@ -24,6 +24,24 @@ def baseline_indices(dataset, subject):
             f"Subject {subject} needs at least {BASELINE_WINDOWS} Baseline windows for calibration."
         )
     return indices[:BASELINE_WINDOWS]
+
+
+def post_onboarding_mask(dataset):
+    """Score only windows starting after the entire resting reference interval.
+
+    Excluding just the three reference rows is insufficient: the 15s stride
+    makes the next 30s window overlap the last onboarding window.
+    """
+    mask = np.zeros(len(dataset.labels), dtype=bool)
+    starts = dataset.metadata['start_sec'].to_numpy()
+    for subject in dataset.subject_ids:
+        reference = baseline_indices(dataset, subject)
+        end = float(starts[reference].max()) + WINDOW_SECONDS
+        subject_mask = (dataset.subjects == subject) & (starts >= end)
+        if not subject_mask.any():
+            raise ValueError(f'Subject {subject} has no windows after resting onboarding.')
+        mask |= subject_mask
+    return mask
 
 
 def calibrate_windows(

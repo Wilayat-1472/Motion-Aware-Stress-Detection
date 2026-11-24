@@ -24,6 +24,7 @@ def plot_diagnostics(
         scores = archive["oof_probs"]
         predictions = archive["oof_preds"]
         labels = archive["y_true"]
+        evaluation_mask = archive['evaluation_mask'].copy() if 'evaluation_mask' in archive.files else np.ones(len(labels), dtype=bool)
         if "start_sec" in archive.files:
             if not np.array_equal(
                 archive["start_sec"], metadata["start_sec"].to_numpy()
@@ -38,6 +39,8 @@ def plot_diagnostics(
                     "Result archive and metadata subject order do not match."
                 )
     count = len(metadata)
+    if evaluation_mask.shape != (count,) or evaluation_mask.dtype != np.bool_ or not evaluation_mask.any():
+        raise ValueError('Result archive has an invalid evaluation mask.')
     if (
         scores.shape != (count, 3)
         or labels.shape != (count,)
@@ -57,9 +60,10 @@ def plot_diagnostics(
     subjects = metadata["subject"].to_numpy()
     if subject not in subjects:
         raise ValueError(f"Timeline subject {subject} is not present.")
-    ids = sorted(set(subjects))
+    ids = sorted(set(subjects[evaluation_mask]))
     per_subject = [
-        f1_score(labels[subjects == s], predictions[subjects == s], average="macro")
+        f1_score(labels[(subjects == s) & evaluation_mask], predictions[(subjects == s) & evaluation_mask],
+                 labels=[0, 1, 2], average="macro", zero_division=0)
         for s in ids
     ]
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
@@ -72,14 +76,14 @@ def plot_diagnostics(
     )
     axes[0, 0].set(title="A. Subject-held-out Macro-F1", ylabel="Macro-F1", ylim=(0, 1))
     axes[0, 0].legend()
-    matrix = confusion_matrix(labels, predictions, labels=[0, 1, 2], normalize="true")
+    matrix = confusion_matrix(labels[evaluation_mask], predictions[evaluation_mask], labels=[0, 1, 2], normalize="true")
     axes[0, 1].imshow(matrix, cmap="Blues", vmin=0, vmax=1)
     axes[0, 1].set(
         xticks=range(3),
         yticks=range(3),
         xticklabels=CLASSES,
         yticklabels=CLASSES,
-        title=f"B. Normalized confusion matrix (N = {count:,})",
+        title=f"B. Scored-window confusion matrix (N = {evaluation_mask.sum():,})",
         xlabel="Predicted",
         ylabel="True",
     )
@@ -98,6 +102,8 @@ def plot_diagnostics(
     x = np.arange(mask.sum())
     axes[1, 0].plot(x, scores[mask, 1], color="#d62728", label="Stress score")
     axes[1, 0].plot(x, rows["sqi"], color="#2ca02c", linestyle="--", label="Motion SQI")
+    axes[1, 0].scatter(x[~evaluation_mask[mask]], scores[mask, 1][~evaluation_mask[mask]],
+                       marker='x', color='gray', label='Excluded onboarding')
     axes[1, 0].fill_between(
         x,
         0,

@@ -15,7 +15,7 @@ import numpy as np
 import torch
 
 from tests.helpers import fixture_dataset, recording
-from stress_detection.calibration import calibrate_windows, fit_feature_scaler
+from stress_detection.calibration import calibrate_windows, fit_feature_scaler, post_onboarding_mask
 from stress_detection.config import TrainingConfig
 from stress_detection.dataset import WindowDataset, load_windows
 from stress_detection.evaluation import (
@@ -147,6 +147,44 @@ class PipelineTests(unittest.TestCase):
         np.testing.assert_array_equal(mean, other_mean)
         np.testing.assert_array_equal(std, other_std)
 
+    def test_post_onboarding_excludes_overlapping_reference_windows(self):
+        # Baseline windows start at 0, 15, 30 seconds; their union ends at 60s.
+        # A fourth window starting at 45s must be excluded too, even if not used
+        # directly for calibration. The 60s window is the first scorable one.
+        # Add a 45s window deliberately: ordinary fixture extraction discards
+        # this label-transition window, but imports may contain one.
+        import pandas as pd
+        extra = self.dataset.metadata.iloc[[0]].copy()
+        extra['start_sec'] = 45
+        data_with_overlap = WindowDataset(
+            np.concatenate([self.dataset.sequences, self.dataset.sequences[:1]]),
+            np.concatenate([self.dataset.features, self.dataset.features[:1]]),
+            pd.concat([self.dataset.metadata, extra], ignore_index=True))
+        mask = post_onboarding_mask(data_with_overlap)
+        starts = data_with_overlap.metadata['start_sec'].to_numpy()
+        np.testing.assert_array_equal(mask, starts >= 60)
+        shuffled = np.random.default_rng(7).permutation(len(mask))
+        data = WindowDataset(data_with_overlap.sequences[shuffled], data_with_overlap.features[shuffled],
+                             data_with_overlap.metadata.iloc[shuffled])
+        np.testing.assert_array_equal(post_onboarding_mask(data), mask[shuffled])
+
+    def test_neural_post_onboarding_report_and_plot_use_the_scored_subset(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            scores, report = run_loso(self.dataset, TrainingConfig(epochs=1, device='cpu'))
+        mask = post_onboarding_mask(self.dataset)
+        self.assertEqual(report['windows'], int(mask.sum()))
+        self.assertEqual(report['evaluation_mask'], mask.tolist())
+        self.assertEqual(sum(sum(row) for row in report['confusion_matrix']), int(mask.sum()))
+        self.assertEqual(sum(fold['scored_test_windows'] for fold in report['folds']), int(mask.sum()))
+        with tempfile.TemporaryDirectory() as directory:
+            self.dataset.save(directory)
+            save_evaluation(self.dataset, scores, report, directory)
+            with np.load(Path(directory) / 'wesad_loso_results.npz', allow_pickle=False) as arrays:
+                np.testing.assert_array_equal(arrays['evaluation_mask'], mask)
+            plot_diagnostics(Path(directory) / 'wesad_loso_results.npz',
+                             Path(directory) / 'wesad_meta.csv', Path(directory) / 'plot.png')
+            self.assertGreater((Path(directory) / 'plot.png').stat().st_size, 1000)
+
     def test_recorded_inference_matches_notebook_forward(self):
         data = self.dataset
         calibrated = calibrate_windows(data)
@@ -230,7 +268,7 @@ class PipelineTests(unittest.TestCase):
             context = {}
             with contextlib.redirect_stdout(io.StringIO()):
                 exec(compile(tree, "notebook-one-epoch-loso", "exec"), context)
-                scores, report = run_loso(data, TrainingConfig(epochs=1, device="cpu"))
+                scores, report = run_loso(data, TrainingConfig(epochs=1, device="cpu"), exclude_onboarding=False)
             np.testing.assert_allclose(
                 scores, context["oof_probs"], atol=1e-6, rtol=1e-5
             )
@@ -255,6 +293,10 @@ class PipelineTests(unittest.TestCase):
             result = run_tabular_benchmarks(self.dataset)
         self.assertEqual(set(result), {"uncalibrated", "resting_calibrated"})
         self.assertEqual(result["resting_calibrated"]["subjects"], 3)
+        for report in result.values():
+            self.assertEqual(report['evaluation_protocol'], 'post_onboarding')
+            self.assertEqual(report['windows'], int(post_onboarding_mask(self.dataset).sum()))
+            self.assertEqual(report['excluded_windows'], len(self.dataset.labels) - report['windows'])
 
     def test_validation_rejects_bad_data_and_missing_baseline(self):
         data = self.dataset

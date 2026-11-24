@@ -66,12 +66,14 @@ def main(argv=None):
     )
     add_windows(benchmark)
     benchmark.add_argument("--output", default="outputs/tabular_metrics.json")
+    benchmark.add_argument('--include-onboarding', action='store_true', help='Reproduce historical scoring, including resting reference windows.')
     evaluate = commands.add_parser(
         "evaluate", help="Train a new neural model per held-out subject."
     )
     add_windows(evaluate)
     add_training(evaluate)
     evaluate.add_argument("--output-dir", default="outputs/loso")
+    evaluate.add_argument('--include-onboarding', action='store_true', help='Reproduce historical scoring, including resting reference windows.')
     train = commands.add_parser(
         "train", help="Train and export one reference or all-subject model."
     )
@@ -171,10 +173,10 @@ def main(argv=None):
                 device=args.device,
             )
         if args.command == "benchmark":
-            write_json(run_tabular_benchmarks(data), args.output)
+            write_json(run_tabular_benchmarks(data, exclude_onboarding=not args.include_onboarding), args.output)
             print(f"Saved benchmarks: {args.output}")
         elif args.command == "evaluate":
-            scores, report = run_loso(data, config)
+            scores, report = run_loso(data, config, exclude_onboarding=not args.include_onboarding)
             save_evaluation(data, scores, report, args.output_dir)
             print(
                 f"Macro-F1: {report['macro_f1']:.4f}; balanced accuracy: {report['balanced_accuracy']:.4f}"
